@@ -1,15 +1,18 @@
-#include "clang/AST/ASTConsumer.h"
-#include "clang/AST/RecursiveASTVisitor.h"
-#include "clang/AST/Mangle.h"
-#include "clang/Frontend/CompilerInstance.h"
-#include "clang/Frontend/FrontendActions.h"
-#include "clang/Tooling/CommonOptionsParser.h"
-#include "clang/Tooling/Tooling.h"
-#include "llvm/Support/ThreadPool.h"
+#include <iostream>
+
+#include <clang/AST/ASTConsumer.h>
+#include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/AST/Mangle.h>
+#include <clang/Frontend/CompilerInstance.h>
+#include <clang/Frontend/FrontendActions.h>
+#include <clang/Tooling/CommonOptionsParser.h>
+#include <clang/Tooling/Tooling.h>
+#include <llvm/Support/ThreadPool.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <llvm/Support/FormatVariadic.h>
+#include <mutex>
 
-#include "FileGenerationTools.h"
+#include "SigDatabase.h"
 
 using namespace clang;
 using namespace clang::tooling;
@@ -37,14 +40,78 @@ static llvm::cl::opt<std::string> optClangResourceDir(
     llvm::cl::cat(gSapphireToolCategory)
 );
 
-std::vector<ExportEntry> gExports;
-std::mutex               gLogMutex;
+static std::map<uint64_t, SigDatabase> gExports;
+static std::mutex                      gExportsMutex;
+static std::mutex                      gLogMutex;
 
 class SapphireASTVisitor : public RecursiveASTVisitor<SapphireASTVisitor> {
 public:
     explicit SapphireASTVisitor(ASTContext *Context) : Context(Context) {
         // MSVC ABI
         MangleCtx.reset(MicrosoftMangleContext::create(*Context, Context->getDiagnostics()));
+    }
+
+    // v1_21_50/v1.21.50/1_21_50/1.21.50 -> 1'21'050
+    static uint64_t readMCVersion(llvm::StringRef verStr) {
+        verStr = verStr.trim(' ');
+        if (!verStr.size()) return 0;
+        if (verStr[0] == 'v' || verStr[0] == 'V') {
+            verStr = verStr.substr(1);
+        }
+        SmallVector<StringRef> split;
+        if (verStr.starts_with("1_"))
+            verStr.split(split, '_');
+        else if (verStr.starts_with("1."))
+            verStr.split(split, '.');
+        if (split.size() != 3) return 0;
+        uint32_t v1 = 1'00'000;
+        uint32_t v2;
+        if (split[1].consumeInteger(0, v2) && v2 < 99 && v2 >= 0) return 0;
+        uint32_t v3;
+        if (split[2].consumeInteger(0, v3) && v3 < 999 && v3 >= 0) return 0;
+        return v1 + v2 * 1'000 + v3;
+    }
+
+    static bool readMCVersions(std::set<uint64_t> &result, llvm::StringRef versStr) {
+        SmallVector<StringRef> split;
+        versStr.split(split, ',');
+        for (auto &&verStr : split) {
+            auto ver = readMCVersion(verStr);
+            if (!ver)
+                return false;
+            result.emplace(ver);
+        }
+        return true;
+    }
+
+    static SigDatabase::SigOp readSigOp(llvm::StringRef opTypeStr) {
+        opTypeStr = opTypeStr.trim(' ');
+        if (opTypeStr.empty() || opTypeStr == "none" || opTypeStr == "None") return {SigDatabase::SigOpType::None};
+        if (opTypeStr == "deref" || opTypeStr == "Deref") return {SigDatabase::SigOpType::Deref};
+        if (opTypeStr == "call" || opTypeStr == "Call") return {SigDatabase::SigOpType::Call};
+        if (opTypeStr == "move" || opTypeStr == "Mov") return {SigDatabase::SigOpType::Mov};
+        if (opTypeStr == "lea" || opTypeStr == "Lea") return {SigDatabase::SigOpType::Lea};
+        if (opTypeStr.starts_with("disp:") || opTypeStr.starts_with("Disp:")) {
+            opTypeStr = opTypeStr.substr(5).trim(' ');
+            ptrdiff_t disp;
+            if (opTypeStr.consumeInteger(0, disp))
+                return {SigDatabase::SigOpType::_invalid};
+            return {SigDatabase::SigOpType::Disp, disp};
+        }
+        return {SigDatabase::SigOpType::_invalid};
+    }
+
+    // "displ:6,call" -> {{displ, 6}, {call, X}}
+    static bool readSigOps(std::vector<SigDatabase::SigOp> &result, llvm::StringRef opsStr) {
+        SmallVector<StringRef> split;
+        opsStr.split(split, ',');
+        for (auto &&opStr : split) {
+            auto ver = readSigOp(opStr);
+            if (ver.opType == SigDatabase::SigOpType::_invalid)
+                return false;
+            result.emplace_back(ver);
+        }
+        return true;
     }
 
     bool VisitFunctionDecl(FunctionDecl *Func) {
@@ -57,73 +124,62 @@ public:
 
             if (annotation != "sapphire::bind") continue;
 
-            std::string opsStr = "direct";
-            std::string sigStr;
+            std::set<uint64_t>    supportVersion;
+            SigDatabase::SigEntry sigEntry;
 
             auto argCount = ann->args_size();
-
-            if (argCount == 1) { // SAPPHIRE_API("Sig")
-                const Expr *arg0 = *ann->args_begin();
-                if (auto *sigLiteral = getStringFromExpr(arg0)) {
-                    sigStr = convertBinaryToCodeStyleSig(sigLiteral->getString());
-                } else {
-                    std::cerr << "[Error] Failed to extract signature string from AST for "
-                              << Func->getNameInfo().getName().getAsString() << '\n';
+            if (argCount) {
+                if (auto *versionListLiteral = getStringFromExpr(ann->args_begin()[0])) {
+                    auto versStr = versionListLiteral->getString();
+                    if (!readMCVersions(supportVersion, versStr)) {
+                        llvm::errs() << "[Waring] Invalid version string: \"" << versStr << "\"\n";
+                        continue;
+                    }
                 }
-            } else if (argCount == 2) { // SAPPHIRE_API("Ops", "Sig")
-                auto it = ann->args_begin();
-
-                if (auto *OpsLiteral = getStringFromExpr(*it)) {
-                    opsStr = OpsLiteral->getString().str();
+            }
+            if (argCount == 2) { // SAPPHIRE_API("Versions", "Sig")
+                auto args = ann->args_begin();
+                if (auto *SigLiteral = getStringFromExpr(args[1])) {
+                    sigEntry.mSig = SigLiteral->getString();
                 }
-
-                std::advance(it, 1);
-
-                if (auto *SigLiteral = getStringFromExpr(*it)) {
-                    sigStr = convertBinaryToCodeStyleSig(SigLiteral->getString());
+            } else if (argCount == 3) { // SAPPHIRE_API("Versions", "Ops", "Sig")
+                auto args = ann->args_begin();
+                if (auto *OpsLiteral = getStringFromExpr(args[1])) {
+                    readSigOps(sigEntry.mOperations, OpsLiteral->getString());
+                }
+                if (auto *SigLiteral = getStringFromExpr(args[2])) {
+                    sigEntry.mSig = SigLiteral->getString();
                 }
             } else {
                 continue;
             }
 
-            if (sigStr.empty()) {
+            if (sigEntry.mSig.empty()) {
                 std::cerr << "[Warning] Empty signature detected for function: "
                           << Func->getNameInfo().getName().getAsString() << '\n';
                 continue;
             }
 
             std::string              mangledName;
-            llvm::raw_string_ostream Out(mangledName);
+            llvm::raw_string_ostream Out(sigEntry.mSymbol);
             if (MangleCtx->shouldMangleDeclName(Func)) {
                 MangleCtx->mangleName(Func, Out);
             } else {
                 Out << Func->getNameInfo().getName().getAsString();
             }
 
-            if (!mangledName.empty() && !sigStr.empty()) {
-                // TODO: save sig
-                gExports.push_back({mangledName, sigStr, opsStr.empty() ? "direct" : opsStr});
-                std::cout << "[+] " << mangledName << '\n';
+            if (!sigEntry.mSymbol.empty()) {
+                std::lock_guard<std::mutex> lk(gExportsMutex);
+                for (auto &&ver : supportVersion) {
+                    auto found = gExports.find(ver);
+                    if (found == gExports.end()) {
+                        found = gExports.try_emplace(ver, ver).first;
+                    }
+                    found->second.addSigEntry(std::move(sigEntry));
+                }
             }
         }
         return true;
-    }
-
-    static std::string convertBinaryToCodeStyleSig(llvm::StringRef bytes) {
-        if (bytes.empty()) return {};
-        std::string result;
-        result.reserve(bytes.size() * 3 - 1);
-        constexpr char hex[] = "0123456789ABCDEF";
-        for (unsigned char c : bytes) {
-            if (!result.empty()) result += " ";
-            if (c == 0x00)
-                result += "??";
-            else {
-                result += hex[(c >> 4) & 0xF];
-                result += hex[c & 0xF];
-            }
-        }
-        return result;
     }
 
     static const StringLiteral *getStringFromExpr(const Expr *E) {
@@ -345,6 +401,7 @@ int runParallel(CommonOptionsParser &optionsParser, const std::vector<std::strin
 
             diagStream.flush();
             if (!diagOutput.empty()) {
+                std::lock_guard<std::mutex> lock(gLogMutex);
                 std::cerr << diagOutput;
             }
         });
@@ -474,6 +531,20 @@ std::vector<std::string> filterHeadersByToken(const std::vector<std::string> &fi
     return filteredFiles;
 }
 
+void generateDefFile(const fs::path &outputPath, const std::vector<SigDatabase::SigEntry> &entries) {
+    std::ofstream file(outputPath);
+    if (!file.is_open()) {
+        std::cerr << "[Error] Cannot write to " << outputPath << std::endl;
+        return;
+    }
+    file << "LIBRARY \"Minecraft.Windows.exe\"\n";
+    file << "EXPORTS\n";
+    for (const auto &entry : entries) {
+        file << "    " << entry.mSymbol << "\n";
+    }
+    std::cout << "[Success] Generated DEF file: " << outputPath << " (" << entries.size() << " exports)" << std::endl;
+}
+
 int main(int argc, const char **argv) {
     // SapphireCodeGen.exe [options] <source dir>
     // [options]:
@@ -493,7 +564,7 @@ int main(int argc, const char **argv) {
         return 1;
     }
 
-    std::string outputDir = fs::absolute(optOutputDir.getValue()).string();
+    fs::path outputDir = fs::absolute(optOutputDir.getValue());
 
     std::vector<std::string> allSources;
     for (auto &&srcPath : sourcePaths) {
@@ -519,7 +590,7 @@ int main(int argc, const char **argv) {
     }
 
     fs::create_directories(outputDir);
-    std::string pchPath = outputDir + "/sapphire_codegen.pch";
+    std::string pchPath = (outputDir / "sapphire_codegen.pch").string();
 
     if (!generatePCHInternal(optionsParser.getCompilations(), pchPath)) {
         std::cerr << "[PCH] Warning: Generation failed. Performance will be impacted." << '\n';
@@ -535,8 +606,11 @@ int main(int argc, const char **argv) {
 
     if (result == 0) {
         fs::create_directories(outputDir);
-        generateDefFile(outputDir + "/bedrock_sdk.def", gExports);
-        generateSymbolDB(outputDir + "/symbols.json", gExports);
+        for (auto &&[ver, SigDatabase] : gExports) {
+            std::ofstream file(outputDir / llvm::formatv("bedrock_sigs.{0}.sig.db", ver).str(), std::ios::binary);
+            SigDatabase.save(file);
+            generateDefFile(outputDir / llvm::formatv("bedrock_def.{0}.def", ver).str(), SigDatabase.getSigEntries());
+        }
     }
 
     return result;
