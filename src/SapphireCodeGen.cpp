@@ -324,6 +324,7 @@ bool generatePCHInternal(const CompilationDatabase &db, const std::string &outpu
             if (!optTargetMCVersion.empty()) {
                 newArgs.push_back("/DMC_VERSION=" + optTargetMCVersion);
             }
+            newArgs.push_back("/DSAPPHIRE_CODEGEN_PASS");
 
             for (size_t i = 1; i < baseArgs.size(); ++i) {
                 StringRef Arg = baseArgs[i];
@@ -377,9 +378,6 @@ int runParallel(CommonOptionsParser &optionsParser, const std::vector<std::strin
                 "--target=x86_64-pc-windows-msvc", ArgumentInsertPosition::BEGIN
             ));
             tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
-                "/DSAPPHIRE_CODEGEN_PASS", ArgumentInsertPosition::BEGIN
-            ));
-            tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
                 "-Wno-pragma-system-header-outside-header", ArgumentInsertPosition::BEGIN
             ));
             tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
@@ -409,7 +407,7 @@ int runParallel(CommonOptionsParser &optionsParser, const std::vector<std::strin
 
     pool.wait();
 
-    return errorCount > 0 ? 1 : 0;
+    return errorCount;
 }
 
 inline bool isIdentChar(char c) {
@@ -518,7 +516,7 @@ std::vector<std::string> filterHeadersByToken(const std::vector<std::string> &fi
     std::atomic<int>         keptCount{0};
 
     for (const auto &file : files) {
-        Pool.async([&, file]() {
+        Pool.async([&]() {
             if (fastCheckToken(file, token)) {
                 std::lock_guard<std::mutex> lock(resultMutex);
                 filteredFiles.push_back(file);
@@ -604,13 +602,11 @@ int main(int argc, const char **argv) {
     auto endT = std::chrono::steady_clock::now();
     std::cout << "Time: " << (endT - beginT).count() / 1'000'000.0 << "ms." << '\n';
 
-    if (result == 0) {
-        fs::create_directories(outputDir);
-        for (auto &&[ver, SigDatabase] : gExports) {
-            std::ofstream file(outputDir / llvm::formatv("bedrock_sigs.{0}.sig.db", ver).str(), std::ios::binary);
-            SigDatabase.save(file);
-            generateDefFile(outputDir / llvm::formatv("bedrock_def.{0}.def", ver).str(), SigDatabase.getSigEntries());
-        }
+    fs::create_directories(outputDir);
+    for (auto &&[ver, SigDatabase] : gExports) {
+        std::ofstream file(outputDir / llvm::formatv("bedrock_sigs.{0}.sig.db", ver).str(), std::ios::binary);
+        SigDatabase.save(file);
+        generateDefFile(outputDir / llvm::formatv("bedrock_def.{0}.def", ver).str(), SigDatabase.getSigEntries());
     }
 
     return result;
