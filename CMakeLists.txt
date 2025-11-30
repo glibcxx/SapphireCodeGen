@@ -21,7 +21,16 @@ find_package(Clang REQUIRED CONFIG)
 message(STATUS "Found Clang ${CLANG_PACKAGE_VERSION}")
 include_directories(${CLANG_INCLUDE_DIRS})
 
-add_executable(SapphireCodeGen src/SapphireCodeGen.cpp src/SigDatabase.cpp)
+add_executable(SapphireCodeGen
+    src/SapphireCodeGen.cpp
+    src/codegen/SigDatabase.cpp
+    src/codegen/Application.cpp
+    src/codegen/CommandLine.cpp
+    src/codegen/FileProcessor.cpp
+    src/codegen/PCHGenerator.cpp
+    src/codegen/ASTParser.cpp
+    src/codegen/SignatureGenerator.cpp
+)
 
 llvm_map_components_to_libnames(llvm_libs
     Support Core Option Demangle
