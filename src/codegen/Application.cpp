@@ -4,6 +4,7 @@
 #include "PCHGenerator.h"
 #include "ASTParser.h"
 #include "SignatureGenerator.h"
+#include "HeaderGenerator.h"
 #include "../util/StringUtil.h"
 
 #include <llvm/Support/raw_ostream.h>
@@ -33,7 +34,6 @@ namespace sapphire::codegen {
         }
 
         auto outputPath = fs::absolute(cmd.getOutputDirectory()).lexically_normal();
-        auto sourcePath = fs::absolute(cmd.getOutputDirectory()).lexically_normal();
 
         std::set<std::string> targetMCVersions;
         if (!util::parseMCVersions(targetMCVersions, cmd.getTargetMCVersions())) {
@@ -53,7 +53,7 @@ namespace sapphire::codegen {
         llvm::outs() << llvm::formatv("[Scan] Found {0} header files.\n", allSources.size());
 
         auto beginFilter = std::chrono::steady_clock::now();
-        auto activeSources = fileProcessor.filterFilesByToken("SAPPHIRE_API");
+        auto activeSources = fileProcessor.filterFilesByToken("SPHR_DECL_API");
         auto endFilter = std::chrono::steady_clock::now();
         llvm::outs() << llvm::formatv(
             "[Filter] Retained {0} / {1} files (Took {2}s)\n",
@@ -63,7 +63,7 @@ namespace sapphire::codegen {
         );
 
         if (activeSources.empty()) {
-            llvm::outs() << "[Info] No files contain SAPPHIRE_API. Nothing to do.\n";
+            llvm::outs() << "[Info] No files contain SPHR_DECL_API. Nothing to do.\n";
             return 0;
         }
 
@@ -84,8 +84,8 @@ namespace sapphire::codegen {
             auto endT = std::chrono::steady_clock::now();
             llvm::outs() << llvm::formatv("[ASTParser] Time: {0}ms.\n", (endT - beginT).count() / 1'000'000.0);
         }
-        SignatureGenerator::generate(astParser.getExports(), cmd.getOutputDirectory());
-
+        SignatureGenerator::generate(astParser.getExports(), outputPath.string());
+        HeaderGenerator::generate(cmd.getSourcePaths(), allSources, outputPath.string());
         return 0;
     }
 

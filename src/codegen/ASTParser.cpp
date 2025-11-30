@@ -82,12 +82,12 @@ namespace sapphire::codegen {
                 }
                 if (!supportVersion.count(mTargetMCVersion))
                     continue;
-                if (argCount == 2) { // SAPPHIRE_API("Versions", "Sig")
+                if (argCount == 2) { // SPHR_DECL_API("Versions", "Sig")
                     auto args = ann->args_begin();
                     if (auto *SigLiteral = getStringFromExpr(args[1])) {
                         sigEntry.mSig = SigLiteral->getString().str();
                     }
-                } else if (argCount == 3) { // SAPPHIRE_API("Versions", "Ops", "Sig")
+                } else if (argCount == 3) { // SPHR_DECL_API("Versions", "Ops", "Sig")
                     auto args = ann->args_begin();
                     if (auto *OpsLiteral = getStringFromExpr(args[1])) {
                         readSigOps(sigEntry.mOperations, OpsLiteral->getString());

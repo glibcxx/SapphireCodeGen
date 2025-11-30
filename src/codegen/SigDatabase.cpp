@@ -47,6 +47,7 @@ namespace sapphire::codegen {
                 break;
             case SigDatabase::SigOpType::Disp:
                 result.data = fshelper::read<ptrdiff_t>(fs);
+                break;
             default:
                 throw std::runtime_error{"Invalid sig operation type"};
             }

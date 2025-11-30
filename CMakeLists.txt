@@ -30,6 +30,7 @@ add_executable(SapphireCodeGen
     src/codegen/PCHGenerator.cpp
     src/codegen/ASTParser.cpp
     src/codegen/SignatureGenerator.cpp
+    src/codegen/HeaderGenerator.cpp
 )
 
 llvm_map_components_to_libnames(llvm_libs
