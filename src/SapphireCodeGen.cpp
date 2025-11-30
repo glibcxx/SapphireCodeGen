@@ -1,5 +1,6 @@
-#include <iostream>
+#include <mimalloc-new-delete.h>
 
+#include <chrono>
 #include <clang/AST/ASTConsumer.h>
 #include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/AST/Mangle.h>
@@ -10,7 +11,7 @@
 #include <llvm/Support/ThreadPool.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <llvm/Support/FormatVariadic.h>
-#include <mutex>
+#include <llvm/Support/raw_ostream.h>
 
 #include "SigDatabase.h"
 
@@ -46,9 +47,9 @@ static std::mutex                      gLogMutex;
 
 class SapphireASTVisitor : public RecursiveASTVisitor<SapphireASTVisitor> {
 public:
-    explicit SapphireASTVisitor(ASTContext *Context) : Context(Context) {
+    explicit SapphireASTVisitor(ASTContext &Context) : Context(Context) {
         // MSVC ABI
-        MangleCtx.reset(MicrosoftMangleContext::create(*Context, Context->getDiagnostics()));
+        MangleCtx.reset(MicrosoftMangleContext::create(Context, Context.getDiagnostics()));
     }
 
     // v1_21_50/v1.21.50/1_21_50/1.21.50 -> 1'21'050
@@ -66,9 +67,9 @@ public:
         if (split.size() != 3) return 0;
         uint32_t v1 = 1'00'000;
         uint32_t v2;
-        if (split[1].consumeInteger(0, v2) && v2 < 99 && v2 >= 0) return 0;
+        if (split[1].consumeInteger(10, v2) || v2 >= 100 || v2 < 0) return 0;
         uint32_t v3;
-        if (split[2].consumeInteger(0, v3) && v3 < 999 && v3 >= 0) return 0;
+        if (split[2].consumeInteger(10, v3) || v3 >= 1000 || v3 < 0) return 0;
         return v1 + v2 * 1'000 + v3;
     }
 
@@ -115,7 +116,6 @@ public:
     }
 
     bool VisitFunctionDecl(FunctionDecl *Func) {
-        if (!Context->getSourceManager().isInMainFile(Func->getLocation())) return true;
         if (!Func->hasAttrs()) return true;
         for (const clang::Attr *attr : Func->getAttrs()) {
             const auto *ann = dyn_cast<AnnotateAttr>(attr);
@@ -132,7 +132,7 @@ public:
                 if (auto *versionListLiteral = getStringFromExpr(ann->args_begin()[0])) {
                     auto versStr = versionListLiteral->getString();
                     if (!readMCVersions(supportVersion, versStr)) {
-                        llvm::errs() << "[Waring] Invalid version string: \"" << versStr << "\"\n";
+                        llvm::errs() << llvm::formatv("[Warning] Invalid version string: \"{0}\"\n", versStr);
                         continue;
                     }
                 }
@@ -155,8 +155,9 @@ public:
             }
 
             if (sigEntry.mSig.empty()) {
-                std::cerr << "[Warning] Empty signature detected for function: "
-                          << Func->getNameInfo().getName().getAsString() << '\n';
+                llvm::errs() << llvm::formatv(
+                    "[Warning] Empty signature detected for function: {0}\n", Func->getNameInfo().getName().getAsString()
+                );
                 continue;
             }
 
@@ -189,26 +190,51 @@ public:
     }
 
 private:
-    ASTContext                    *Context;
+    ASTContext                    &Context;
     std::unique_ptr<MangleContext> MangleCtx;
 };
 
 class SapphireASTConsumer : public ASTConsumer {
 public:
-    explicit SapphireASTConsumer(ASTContext *Context) : Visitor(Context) {}
+    explicit SapphireASTConsumer(ASTContext &Context) :
+        Visitor(Context), SM(Context.getSourceManager()) {}
 
-    void HandleTranslationUnit(ASTContext &Context) override {
-        Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+    void visitDeclContext(DeclContext *DC) {
+        if (!DC) return;
+        for (auto *D : DC->decls()) {
+            if (isa<NamespaceDecl>(D))
+                visitDeclContext(cast<NamespaceDecl>(D));
+            else if (isa<TagDecl>(D))
+                visitDeclContext(cast<TagDecl>(D));
+            else if (FunctionDecl *FD = D->getAsFunction())
+                Visitor.VisitFunctionDecl(FD);
+        }
+    }
+
+    bool HandleTopLevelDecl(DeclGroupRef DG) override {
+        for (auto *D : DG) {
+            clang::SourceLocation Loc = D->getLocation();
+            if (SM.isWrittenInMainFile(Loc)) {
+                if (isa<NamespaceDecl>(D))
+                    visitDeclContext(cast<NamespaceDecl>(D));
+                else if (isa<TagDecl>(D))
+                    visitDeclContext(cast<TagDecl>(D));
+                else if (FunctionDecl *FD = D->getAsFunction())
+                    Visitor.VisitFunctionDecl(FD);
+            }
+        }
+        return true;
     }
 
 private:
-    SapphireASTVisitor Visitor;
+    clang::SourceManager &SM;
+    SapphireASTVisitor    Visitor;
 };
 
 class SapphireGenAction : public ASTFrontendAction {
 public:
     std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI, StringRef file) override {
-        return std::make_unique<SapphireASTConsumer>(&CI.getASTContext());
+        return std::make_unique<SapphireASTConsumer>(CI.getASTContext());
     }
 };
 
@@ -228,7 +254,12 @@ void scanHeaderFiles(const std::string &rootDir, std::vector<std::string> &outpu
 ArgumentsAdjuster getSapphireArgumentsAdjuster(const std::string &pchPath) {
     return [&pchPath](const CommandLineArguments &Args, StringRef /*filename*/) {
         CommandLineArguments newArgs;
+
         newArgs.push_back(Args[0]);
+
+        newArgs.push_back("--target=x86_64-pc-windows-msvc");
+        newArgs.push_back("-Wno-pragma-system-header-outside-header");
+        newArgs.push_back("-Wno-everything");
 
         if (!optTargetMCVersion.empty()) {
             newArgs.push_back("/DMC_VERSION=" + optTargetMCVersion);
@@ -247,16 +278,14 @@ ArgumentsAdjuster getSapphireArgumentsAdjuster(const std::string &pchPath) {
         for (size_t i = 1; i < Args.size(); ++i) {
             StringRef Arg = Args[i];
 
-            if (Arg.starts_with("/Yu") || Arg.starts_with("/Yc") || Arg.starts_with("/Fp")
-                || Arg.starts_with("/FI")) {
-                continue;
-            }
-            if (Arg == "-include-pch") {
-                i++;
+            if (Arg.starts_with("/Yu") || Arg.starts_with("/Yc")
+                || Arg.starts_with("/Fp") || Arg.starts_with("/FI")
+                || Arg.starts_with("-DMC_VERSION=") || Arg.starts_with("/DMC_VERSION=")) {
                 continue;
             }
 
-            if (Arg.starts_with("-DMC_VERSION=") || Arg.starts_with("/DMC_VERSION=")) {
+            if (Arg == "-include-pch") {
+                i++; // Skip the next argument, which is the PCH file path
                 continue;
             }
 
@@ -297,13 +326,13 @@ bool generatePCHInternal(const CompilationDatabase &db, const std::string &outpu
         if (foundCandidate) {
             baseArgs = args;
             sourceFilename = cmds[0].Filename;
-            std::cout << "[PCH] Found PCH template from: " << sourceFilename << '\n';
+            llvm::outs() << llvm::formatv("[PCH] Found PCH template from: {0}\n", sourceFilename);
             break;
         }
     }
 
     if (!foundCandidate || pchHeader.empty()) {
-        std::cout << "[PCH] No /FI found in ANY compile commands. Skipping PCH generation." << '\n';
+        llvm::outs() << "[PCH] No /FI found in ANY compile commands. Skipping PCH generation." << '\n';
         return false;
     }
 
@@ -316,6 +345,10 @@ bool generatePCHInternal(const CompilationDatabase &db, const std::string &outpu
 
             newArgs.push_back(arg[0]);
 
+            newArgs.push_back("--target=x86_64-pc-windows-msvc");
+            newArgs.push_back("-Wno-pragma-system-header-outside-header");
+            newArgs.push_back("-Wno-everything");
+
             if (!optClangResourceDir.empty()) {
                 newArgs.push_back("-resource-dir");
                 newArgs.push_back(optClangResourceDir);
@@ -325,20 +358,17 @@ bool generatePCHInternal(const CompilationDatabase &db, const std::string &outpu
                 newArgs.push_back("/DMC_VERSION=" + optTargetMCVersion);
             }
             newArgs.push_back("/DSAPPHIRE_CODEGEN_PASS");
+            newArgs.push_back("-Xclang");
+            newArgs.push_back("-skip-function-bodies");
 
             for (size_t i = 1; i < baseArgs.size(); ++i) {
-                StringRef Arg = baseArgs[i];
-
-                if (Arg.starts_with("/Yu") || Arg.starts_with("/Yc") || Arg.starts_with("/Fp") || Arg.starts_with("/FI")) continue;
-
-                if (Arg.starts_with("/Fo") || Arg.starts_with("/Fa") || Arg.starts_with("/Fe")) continue;
-                if (Arg.starts_with("-DMC_VERSION=") || Arg.starts_with("/DMC_VERSION=")) {
+                StringRef arg = baseArgs[i];
+                if (arg.starts_with("/Yu") || arg.starts_with("/Yc") || arg.starts_with("/Fp") || arg.starts_with("/FI")
+                    || arg.starts_with("/Fo") || arg.starts_with("/Fa") || arg.starts_with("/Fe")
+                    || arg.starts_with("-DMC_VERSION=") || arg.starts_with("/DMC_VERSION=") || arg == sourceFilename) {
                     continue;
                 }
-
-                if (Arg == sourceFilename) continue;
-
-                newArgs.push_back(std::string(Arg));
+                newArgs.push_back(std::string(arg));
             }
 
             newArgs.push_back("-o");
@@ -349,12 +379,8 @@ bool generatePCHInternal(const CompilationDatabase &db, const std::string &outpu
             return newArgs;
         }
     );
-    PCHTool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
-        "-Wno-pragma-system-header-outside-header", ArgumentInsertPosition::BEGIN
-    ));
-    PCHTool.appendArgumentsAdjuster(getInsertArgumentAdjuster("-Wno-everything", ArgumentInsertPosition::BEGIN));
 
-    std::cout << "[PCH] Generating: " << outputPchPath << " from " << pchHeader << '\n';
+    llvm::outs() << llvm::formatv("[PCH] Generating: {0} from {1}\n", outputPchPath, pchHeader);
 
     return PCHTool.run(newFrontendActionFactory<GeneratePCHAction>().get()) == 0;
 }
@@ -363,26 +389,17 @@ int runParallel(CommonOptionsParser &optionsParser, const std::vector<std::strin
     llvm::ThreadPoolStrategy strategy = llvm::hardware_concurrency();
     llvm::DefaultThreadPool  pool(strategy);
 
-    std::cout << "[Perf] Running on " << strategy.compute_thread_count() << " threads (LLVM ThreadPool)..." << '\n';
+    llvm::outs() << llvm::formatv(
+        "[Perf] Running on {0} threads (LLVM ThreadPool)...\n", strategy.compute_thread_count()
+    );
 
-    unsigned         threadCount = strategy.compute_thread_count();
     std::atomic<int> errorCount{0};
 
     for (auto &&header : sources) {
         pool.async([&]() {
-            ClangTool tool(optionsParser.getCompilations(), header);
+            ClangTool tool(optionsParser.getCompilations(), header, std::make_shared<PCHContainerOperations>());
 
             tool.appendArgumentsAdjuster(getSapphireArgumentsAdjuster(pchPath));
-
-            tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
-                "--target=x86_64-pc-windows-msvc", ArgumentInsertPosition::BEGIN
-            ));
-            tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
-                "-Wno-pragma-system-header-outside-header", ArgumentInsertPosition::BEGIN
-            ));
-            tool.appendArgumentsAdjuster(getInsertArgumentAdjuster(
-                "-Wno-everything", ArgumentInsertPosition::BEGIN
-            ));
 
             std::string              diagOutput;
             llvm::raw_string_ostream diagStream(diagOutput);
@@ -400,7 +417,7 @@ int runParallel(CommonOptionsParser &optionsParser, const std::vector<std::strin
             diagStream.flush();
             if (!diagOutput.empty()) {
                 std::lock_guard<std::mutex> lock(gLogMutex);
-                std::cerr << diagOutput;
+                llvm::errs() << diagOutput;
             }
         });
     }
@@ -532,7 +549,7 @@ std::vector<std::string> filterHeadersByToken(const std::vector<std::string> &fi
 void generateDefFile(const fs::path &outputPath, const std::vector<SigDatabase::SigEntry> &entries) {
     std::ofstream file(outputPath);
     if (!file.is_open()) {
-        std::cerr << "[Error] Cannot write to " << outputPath << std::endl;
+        llvm::errs() << llvm::formatv("[Error] Cannot write to {0}\n", outputPath.string());
         return;
     }
     file << "LIBRARY \"Minecraft.Windows.exe\"\n";
@@ -540,7 +557,9 @@ void generateDefFile(const fs::path &outputPath, const std::vector<SigDatabase::
     for (const auto &entry : entries) {
         file << "    " << entry.mSymbol << "\n";
     }
-    std::cout << "[Success] Generated DEF file: " << outputPath << " (" << entries.size() << " exports)" << std::endl;
+    llvm::outs() << llvm::formatv(
+        "[Success] Generated DEF file: {0} ({1} exports)\n", outputPath.string(), entries.size()
+    );
 }
 
 int main(int argc, const char **argv) {
@@ -558,32 +577,36 @@ int main(int argc, const char **argv) {
     CommonOptionsParser &optionsParser = expectedParser.get();
     const auto          &sourcePaths = optionsParser.getSourcePathList();
     if (sourcePaths.empty()) {
-        std::cerr << "[Error] No source directory specified." << '\n';
+        llvm::errs() << "[Error] No source directory specified." << '\n';
         return 1;
     }
 
-    fs::path outputDir = fs::absolute(optOutputDir.getValue());
+    fs::path outputDir = fs::absolute(optOutputDir.getValue()).lexically_normal();
 
     std::vector<std::string> allSources;
     for (auto &&srcPath : sourcePaths) {
-        std::cout << "[Scan] Scanning directory: " << srcPath << '\n';
+        llvm::outs() << llvm::formatv("[Scan] Scanning directory: {0}\n", srcPath);
         scanHeaderFiles(srcPath, allSources);
     }
     if (allSources.empty()) {
-        std::cerr << "[Error] No header files found." << '\n';
+        llvm::errs() << "[Error] No header files found." << '\n';
         return 1;
     }
 
-    std::cout << "[Scan] Found " << allSources.size() << " header files." << '\n';
+    llvm::outs() << llvm::formatv("[Scan] Found {0} header files.\n", allSources.size());
 
     auto beginFilter = std::chrono::steady_clock::now();
     auto activeSources = filterHeadersByToken(allSources, "SAPPHIRE_API");
     auto endFilter = std::chrono::steady_clock::now();
-    std::cout << "[Filter] Retained " << activeSources.size() << " / " << allSources.size()
-              << " files (Took " << std::chrono::duration<double>(endFilter - beginFilter).count() << "s)" << std::endl;
+    llvm::outs() << llvm::formatv(
+        "[Filter] Retained {0} / {1} files (Took {2}s)\n",
+        activeSources.size(),
+        allSources.size(),
+        std::chrono::duration<double>(endFilter - beginFilter).count()
+    );
 
     if (activeSources.empty()) {
-        std::cout << "[Info] No files contain SAPPHIRE_API. Nothing to do." << std::endl;
+        llvm::outs() << "[Info] No files contain SAPPHIRE_API. Nothing to do." << "\n";
         return 0;
     }
 
@@ -591,16 +614,16 @@ int main(int argc, const char **argv) {
     std::string pchPath = (outputDir / "sapphire_codegen.pch").string();
 
     if (!generatePCHInternal(optionsParser.getCompilations(), pchPath)) {
-        std::cerr << "[PCH] Warning: Generation failed. Performance will be impacted." << '\n';
+        llvm::errs() << "[PCH] Warning: Generation failed. Performance will be impacted." << '\n';
         pchPath.clear();
     } else {
-        std::cout << "[PCH] Ready: " << pchPath << '\n';
+        llvm::outs() << llvm::formatv("[PCH] Ready: {0}\n", pchPath);
     }
 
     auto beginT = std::chrono::steady_clock::now();
     int  result = runParallel(optionsParser, activeSources, pchPath);
     auto endT = std::chrono::steady_clock::now();
-    std::cout << "Time: " << (endT - beginT).count() / 1'000'000.0 << "ms." << '\n';
+    llvm::outs() << llvm::formatv("Time: {0}ms.\n", (endT - beginT).count() / 1'000'000.0);
 
     fs::create_directories(outputDir);
     for (auto &&[ver, SigDatabase] : gExports) {

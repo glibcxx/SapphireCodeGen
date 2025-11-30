@@ -11,6 +11,8 @@ message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(AddLLVM)
 
+find_package(mimalloc REQUIRED CONFIG)
+
 add_definitions(${LLVM_DEFINITIONS})
 include_directories(${LLVM_INCLUDE_DIRS})
 link_directories(${LLVM_LIBRARY_DIRS})
@@ -39,6 +41,7 @@ target_link_libraries(SapphireCodeGen PRIVATE
     clangBasic
     clangEdit
     ${llvm_libs}
+    $<IF:$<TARGET_EXISTS:mimalloc-static>,mimalloc-static,mimalloc>
 )
 
 if(MSVC)
