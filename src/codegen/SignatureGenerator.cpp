@@ -42,7 +42,7 @@ namespace sapphire::codegen {
             llvm::errs() << llvm::formatv("[Error] Cannot write to {0}\n", outputPath);
             return;
         }
-        file << "LIBRARY \"Minecraft.Windows.exe\"\n";
+        file << "LIBRARY \"sapphire_bootloader.dll\"\n";
         file << "EXPORTS\n";
         for (const auto &entry : entries) {
             file << "    " << entry.mSymbol << "\n";
