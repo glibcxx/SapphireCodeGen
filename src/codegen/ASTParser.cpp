@@ -4,6 +4,7 @@
 
 #include <clang/AST/Mangle.h>
 #include <clang/AST/RecursiveASTVisitor.h>
+#include <clang/AST/VTableBuilder.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendActions.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
@@ -14,6 +15,73 @@
 
 using namespace clang;
 using namespace clang::tooling;
+
+// these mangle functions are copied from LLVM
+namespace {
+
+    void mangleBits(llvm::raw_ostream &Out, llvm::APInt Value) {
+        if (Value == 0)
+            Out << "A@";
+        else if (Value.uge(1) && Value.ule(10))
+            Out << (Value - 1);
+        else {
+            llvm::SmallString<32> EncodedNumberBuffer;
+            for (; Value != 0; Value.lshrInPlace(4))
+                EncodedNumberBuffer.push_back('A' + (Value & 0xf).getZExtValue());
+            std::reverse(EncodedNumberBuffer.begin(), EncodedNumberBuffer.end());
+            Out.write(EncodedNumberBuffer.data(), EncodedNumberBuffer.size());
+            Out << '@';
+        }
+    }
+
+    void mangleNumber(llvm::raw_ostream &Out, llvm::APSInt Number) {
+        unsigned    Width = std::max(Number.getBitWidth(), 64U);
+        llvm::APInt Value = Number.extend(Width);
+        if (Value.isNegative()) {
+            Value = -Value;
+            Out << '?';
+        }
+        mangleBits(Out, Value);
+    }
+
+    void mangleNumber(llvm::raw_ostream &Out, int64_t Number) {
+        mangleNumber(Out, llvm::APSInt(llvm::APInt(64, Number), /*IsUnsigned*/ false));
+    }
+
+    void mangleVirtualFunctionThunk(
+        llvm::raw_ostream &Out, MicrosoftMangleContext &MC, const CXXRecordDecl *RD, const CXXMethodDecl *MD
+    ) {
+        MSInheritanceModel IM = RD->calculateInheritanceModel();
+        char               Code = '\0';
+        switch (IM) {
+        case MSInheritanceModel::Single: Code = '1'; break;
+        case MSInheritanceModel::Multiple: Code = 'H'; break;
+        case MSInheritanceModel::Virtual: Code = 'I'; break;
+        case MSInheritanceModel::Unspecified: Code = 'J'; break;
+        }
+        uint64_t                       NVOffset = 0;
+        uint64_t                       VBTableOffset = 0;
+        uint64_t                       VBPtrOffset = 0;
+        clang::MicrosoftVTableContext *VTContext = cast<MicrosoftVTableContext>(MC.getASTContext().getVTableContext());
+        MethodVFTableLocation          ML = VTContext->getMethodVFTableLocation(GlobalDecl(MD));
+        MC.mangleVirtualMemPtrThunk(MD, ML, Out);
+        NVOffset = ML.VFPtrOffset.getQuantity();
+        VBTableOffset = ML.VBTableIndex * 4;
+        if (ML.VBase) {
+            const ASTRecordLayout &Layout = MC.getASTContext().getASTRecordLayout(RD);
+            VBPtrOffset = Layout.getVBPtrOffset().getQuantity();
+        }
+        if (VBTableOffset == 0 && IM == MSInheritanceModel::Virtual)
+            NVOffset -= MC.getASTContext().getOffsetOfBaseWithVBPtr(RD).getQuantity();
+        if (inheritanceModelHasNVOffsetField(/*IsMemberFunction=*/true, IM))
+            mangleNumber(Out, static_cast<uint32_t>(NVOffset));
+        if (inheritanceModelHasVBPtrOffsetField(IM))
+            mangleNumber(Out, VBPtrOffset);
+        if (inheritanceModelHasVBTableOffsetField(IM))
+            mangleNumber(Out, VBTableOffset);
+    }
+
+} // namespace
 
 namespace sapphire::codegen {
 
@@ -69,6 +137,7 @@ namespace sapphire::codegen {
 
                 std::set<uint64_t>    supportVersion;
                 SigDatabase::SigEntry sigEntry;
+                sigEntry.mType = SigDatabase::SigEntry::Type::Function;
 
                 auto argCount = ann->args_size();
                 if (argCount) {
@@ -101,13 +170,22 @@ namespace sapphire::codegen {
 
                 if (sigEntry.mSig.empty()) {
                     llvm::errs() << llvm::formatv(
-                        "[Warning] Empty signature detected for function: {0}\n", Func->getNameInfo().getName().getAsString()
+                        "[Warning] Empty signature detected for function: {0}\n",
+                        Func->getNameInfo().getName().getAsString()
                     );
                     continue;
                 }
 
                 llvm::raw_string_ostream Out(sigEntry.mSymbol);
                 if (mMangleCtx->shouldMangleDeclName(Func)) {
+                    const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(Func);
+                    if (MD && MD->isVirtual() && MD->isInstance()) {
+                        sigEntry.mType = SigDatabase::SigEntry::Type::VirtualThunk;
+                        llvm::raw_string_ostream OutEx(sigEntry.mExtraSymbol);
+                        mangleVirtualFunctionThunk(
+                            OutEx, *mMangleCtx, MD->getParent()->getMostRecentNonInjectedDecl(), MD
+                        );
+                    }
                     mMangleCtx->mangleName(Func, Out);
                 } else {
                     Out << Func->getNameInfo().getName().getAsString();
@@ -132,9 +210,9 @@ namespace sapphire::codegen {
         }
 
     private:
-        uint64_t                       mTargetMCVersion;
-        ASTContext                    &mContext;
-        std::unique_ptr<MangleContext> mMangleCtx;
+        uint64_t                                mTargetMCVersion;
+        ASTContext                             &mContext;
+        std::unique_ptr<MicrosoftMangleContext> mMangleCtx;
     };
 
     class SapphireASTConsumer : public ASTConsumer {
