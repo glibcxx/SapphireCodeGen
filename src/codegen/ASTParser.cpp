@@ -126,6 +126,74 @@ namespace sapphire::codegen {
             return true;
         }
 
+        bool VisitDataDecl(VarDecl *Val) {
+            if (!Val->hasExternalFormalLinkage() || !Val->hasAttrs()) return true;
+            for (const auto *attr : Val->getAttrs()) {
+                const auto *ann = dyn_cast<AnnotateAttr>(attr);
+                if (!ann) continue;
+                llvm::StringRef annotation = ann->getAnnotation();
+                if (annotation != "sapphire::bind") continue;
+
+                std::set<uint64_t>    supportVersion;
+                SigDatabase::SigEntry sigEntry;
+                sigEntry.mType = SigDatabase::SigEntry::Type::Data;
+
+                auto argCount = ann->args_size();
+                if (argCount) {
+                    if (auto *versionListLiteral = getStringFromExpr(ann->args_begin()[0])) {
+                        auto versStr = versionListLiteral->getString();
+                        if (!util::parseMCVersions(supportVersion, versStr)) {
+                            llvm::errs() << llvm::formatv("[Warning] Invalid version string: \"{0}\"\n", versStr);
+                            continue;
+                        }
+                    }
+                }
+                if (!supportVersion.count(mTargetMCVersion))
+                    continue;
+                if (argCount == 2) { // SPHR_DECL_API("Versions", "Sig")
+                    auto args = ann->args_begin();
+                    if (auto *SigLiteral = getStringFromExpr(args[1])) {
+                        sigEntry.mSig = SigLiteral->getString().str();
+                    }
+                } else if (argCount == 3) { // SPHR_DECL_API("Versions", "Ops", "Sig")
+                    auto args = ann->args_begin();
+                    if (auto *OpsLiteral = getStringFromExpr(args[1])) {
+                        readSigOps(sigEntry.mOperations, OpsLiteral->getString());
+                    }
+                    if (auto *SigLiteral = getStringFromExpr(args[2])) {
+                        sigEntry.mSig = SigLiteral->getString().str();
+                    }
+                } else {
+                    continue;
+                }
+
+                if (sigEntry.mSig.empty()) {
+                    llvm::errs() << llvm::formatv(
+                        "[Warning] Empty signature detected for data: {0}\n",
+                        Val->getQualifiedNameAsString()
+                    );
+                    continue;
+                }
+
+                llvm::raw_string_ostream Out(sigEntry.mSymbol);
+                if (mMangleCtx->shouldMangleDeclName(Val)) {
+                    mMangleCtx->mangleName(Val, Out);
+                } else {
+                    Out << Val->getQualifiedNameAsString();
+                }
+
+                if (!sigEntry.mSymbol.empty()) {
+                    std::lock_guard<std::mutex> lk(gExportsMutex);
+                    auto                        found = gExports.find(mTargetMCVersion);
+                    if (found == gExports.end()) {
+                        found = gExports.try_emplace(mTargetMCVersion, mTargetMCVersion).first;
+                    }
+                    found->second.addSigEntry(std::move(sigEntry));
+                }
+            }
+            return true;
+        }
+
         bool VisitFunctionDecl(FunctionDecl *Func) {
             if (!Func->hasAttrs()) return true;
             for (const auto *attr : Func->getAttrs()) {
@@ -229,6 +297,8 @@ namespace sapphire::codegen {
                     visitDeclContext(cast<TagDecl>(D));
                 else if (FunctionDecl *FD = D->getAsFunction())
                     mVisitor.VisitFunctionDecl(FD);
+                else if (isa<VarDecl>(D))
+                    mVisitor.VisitDataDecl(cast<VarDecl>(D));
             }
         }
 
@@ -242,6 +312,8 @@ namespace sapphire::codegen {
                         visitDeclContext(cast<TagDecl>(D));
                     else if (FunctionDecl *FD = D->getAsFunction())
                         mVisitor.VisitFunctionDecl(FD);
+                    else if (isa<VarDecl>(D))
+                        mVisitor.VisitDataDecl(cast<VarDecl>(D));
                 }
             }
             return true;
