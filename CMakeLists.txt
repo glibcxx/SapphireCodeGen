@@ -57,3 +57,45 @@ target_link_libraries(SapphireCodeGen PRIVATE
 if(MSVC)
     target_compile_options(SapphireCodeGen PRIVATE /wd4141 /wd4146 /wd4244 /wd4267 /wd4624)
 endif()
+
+include(GNUInstallDirs)
+
+install(TARGETS SapphireCodeGen
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+)
+
+string(REGEX MATCH "^[0-9]+" CLANG_MAJOR_VERSION "${LLVM_PACKAGE_VERSION}")
+get_filename_component(LLVM_INSTALL_PREFIX "${LLVM_LIBRARY_DIRS}" DIRECTORY)
+set(CLANG_RESOURCE_DIR "${LLVM_INSTALL_PREFIX}/lib/clang/${CLANG_MAJOR_VERSION}")
+
+if(NOT IS_DIRECTORY "${CLANG_RESOURCE_DIR}")
+    get_filename_component(LLVM_INSTALL_PREFIX "${LLVM_INSTALL_PREFIX}" DIRECTORY)
+    set(CLANG_RESOURCE_DIR "${LLVM_INSTALL_PREFIX}/lib/clang/${CLANG_MAJOR_VERSION}")
+endif()
+
+if(IS_DIRECTORY "${CLANG_RESOURCE_DIR}")
+    message(STATUS "Found Clang resource directory: ${CLANG_RESOURCE_DIR}")
+    install(DIRECTORY "${CLANG_RESOURCE_DIR}/"
+        DESTINATION "lib/clang/${CLANG_MAJOR_VERSION}")
+else()
+    message(FATAL_ERROR "Could not find Clang resource directory. Please set CLANG_RESOURCE_DIR manually.")
+endif()
+
+install(CODE "
+    include(BundleUtilities)
+    set(BUNDLE_EXECUTABLE \"${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}/SapphireCodeGen.exe\")
+    set(BUNDLE_SEARCH_PATHS
+        \"${LLVM_LIBRARY_DIRS}\"
+        )
+    fixup_bundle(\"\${BUNDLE_EXECUTABLE}\" \"\" \"\${BUNDLE_SEARCH_PATHS}\")
+"    COMPONENT Runtime)
+
+
+# Add a target that is equivalent to the install command
+add_custom_target(install-SapphireCodeGen
+    COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR}
+    COMMENT "Install SapphireCodeGen"
+)
+add_dependencies(install-SapphireCodeGen SapphireCodeGen)
