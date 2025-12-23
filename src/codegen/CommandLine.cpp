@@ -30,6 +30,13 @@ namespace sapphire::codegen {
         cl::cat(gSapphireToolCategory)
     );
 
+    static cl::opt<bool> optGenHeader(
+        "gen-headers",
+        cl::desc("Generate Headers"),
+        cl::init(false),
+        cl::cat(gSapphireToolCategory)
+    );
+
     CommandLine::CommandLine(int argc, const char **argv, cl::OptionCategory &category) {
         auto expectedParser = CommonOptionsParser::create(argc, argv, category);
         if (!expectedParser) {
@@ -49,6 +56,10 @@ namespace sapphire::codegen {
 
     const std::string &CommandLine::getClangResourceDir() const {
         return optClangResourceDir.getValue();
+    }
+
+    bool CommandLine::genHeader() const {
+        return optGenHeader.getValue();
     }
 
     const std::vector<std::string> &CommandLine::getSourcePaths() const {

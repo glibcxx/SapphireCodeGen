@@ -13,10 +13,10 @@ namespace sapphire::codegen {
         fs::create_directories(outputDirPath);
 
         for (auto &&[ver, sigDatabase] : exports) {
-            auto verStr = util::mcVersionToString(ver);
+            auto verStr = util::mcVersionToString2(ver);
             // Generate .sig.db file
             std::ofstream sigFile(
-                outputDirPath / llvm::formatv("bedrock_sigs.{0}.sig.db", verStr).str(),
+                outputDirPath / llvm::formatv("bedrock_sigs+mc{0}.sig.db", verStr).str(),
                 std::ios::binary
             );
             if (sigFile.is_open()) {
@@ -27,7 +27,7 @@ namespace sapphire::codegen {
 
             // Generate .def file
             generateDefFile(
-                (outputDirPath / llvm::formatv("bedrock_def.{0}.def", verStr).str()).string(),
+                (outputDirPath / llvm::formatv("bedrock_def+mc{0}.def", verStr).str()).string(),
                 sigDatabase.getSigEntries()
             );
         }

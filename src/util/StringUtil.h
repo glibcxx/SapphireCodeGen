@@ -12,6 +12,11 @@ namespace sapphire::codegen::util {
         return llvm::formatv("v1_{0}_{1}", verNum / 1'000 - 1'00, verNum % 1'000);
     }
 
+    // 1'21'050 -> "1.21.50"
+    inline std::string mcVersionToString2(uint64_t verNum) {
+        return llvm::formatv("1.{0}.{1}", verNum / 1'000 - 1'00, verNum % 1'000);
+    }
+
     // v1_21_50/v1.21.50/1_21_50/1.21.50 -> 1'21'050
     inline uint64_t parseMCVersion(llvm::StringRef verStr) {
         verStr = verStr.trim(' ');

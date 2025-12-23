@@ -26,6 +26,7 @@ namespace sapphire::codegen {
         //     -p <path>               build path that contains compile commands
         //     -resource-dir <path>    clang resource headers path
         //     -mc-versions <ver-list> mc version macro names, seperated by ','
+        //     -gen-headers            generate headers
 
         CommandLine cmd(mArgc, mArgv, mCategory);
         if (!cmd.isValid()) {
@@ -51,6 +52,11 @@ namespace sapphire::codegen {
             return 1;
         }
         llvm::outs() << llvm::formatv("[Scan] Found {0} header files.\n", allSources.size());
+
+        if (cmd.genHeader()) {
+            HeaderGenerator::generate(cmd.getSourcePaths(), allSources, outputPath.string());
+            return 0;
+        }
 
         auto beginFilter = std::chrono::steady_clock::now();
         auto activeSources = fileProcessor.filterFilesByToken("SPHR_DECL_API");
@@ -85,7 +91,6 @@ namespace sapphire::codegen {
             llvm::outs() << llvm::formatv("[ASTParser] Time: {0}ms.\n", (endT - beginT).count() / 1'000'000.0);
         }
         SignatureGenerator::generate(astParser.getExports(), outputPath.string());
-        HeaderGenerator::generate(cmd.getSourcePaths(), allSources, outputPath.string());
         return 0;
     }
 

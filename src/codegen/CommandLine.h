@@ -16,6 +16,7 @@ namespace sapphire::codegen {
         const std::string &getOutputDirectory() const;
         const std::string &getTargetMCVersions() const;
         const std::string &getClangResourceDir() const;
+        bool               genHeader() const;
 
         const std::vector<std::string>      &getSourcePaths() const;
         clang::tooling::CompilationDatabase &getCompilations();
