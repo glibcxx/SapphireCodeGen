@@ -98,12 +98,12 @@ namespace sapphire::codegen {
 
         static SigDatabase::SigOp readSigOp(llvm::StringRef opTypeStr) {
             opTypeStr = opTypeStr.trim(' ');
-            if (opTypeStr.empty() || opTypeStr == "none" || opTypeStr == "None") return {SigDatabase::SigOpType::None};
-            if (opTypeStr == "deref" || opTypeStr == "Deref") return {SigDatabase::SigOpType::Deref};
-            if (opTypeStr == "call" || opTypeStr == "Call") return {SigDatabase::SigOpType::Call};
-            if (opTypeStr == "move" || opTypeStr == "Mov") return {SigDatabase::SigOpType::Mov};
-            if (opTypeStr == "lea" || opTypeStr == "Lea") return {SigDatabase::SigOpType::Lea};
-            if (opTypeStr.starts_with("disp:") || opTypeStr.starts_with("Disp:")) {
+            if (opTypeStr.empty() || opTypeStr == "none") return {SigDatabase::SigOpType::None};
+            if (opTypeStr == "deref") return {SigDatabase::SigOpType::Deref};
+            if (opTypeStr == "call") return {SigDatabase::SigOpType::Call};
+            if (opTypeStr == "mov") return {SigDatabase::SigOpType::Mov};
+            if (opTypeStr == "lea") return {SigDatabase::SigOpType::Lea};
+            if (opTypeStr.starts_with("disp:")) {
                 opTypeStr = opTypeStr.substr(5).trim(' ');
                 ptrdiff_t disp;
                 if (opTypeStr.consumeInteger(0, disp))
