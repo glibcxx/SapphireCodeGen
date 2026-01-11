@@ -96,34 +96,67 @@ namespace sapphire::codegen {
             mMangleCtx.reset(MicrosoftMangleContext::create(mContext, mContext.getDiagnostics()));
         }
 
-        static SigDatabase::SigOp readSigOp(llvm::StringRef opTypeStr) {
+        static SigDatabase::SigOp consumeSigOp(llvm::StringRef &opTypeStr) {
             opTypeStr = opTypeStr.trim(' ');
-            if (opTypeStr.empty() || opTypeStr == "none") return {SigDatabase::SigOpType::None};
-            if (opTypeStr == "deref") return {SigDatabase::SigOpType::Deref};
-            if (opTypeStr == "call") return {SigDatabase::SigOpType::Call};
-            if (opTypeStr == "mov") return {SigDatabase::SigOpType::Mov};
-            if (opTypeStr == "lea") return {SigDatabase::SigOpType::Lea};
+            if (opTypeStr.empty() || opTypeStr == "none") {
+                opTypeStr = {};
+                return {SigDatabase::SigOpType::None};
+            }
+            if (opTypeStr.starts_with("call")) {
+                opTypeStr = {};
+                return {SigDatabase::SigOpType::Call};
+            }
+            if (opTypeStr.starts_with("lea")) {
+                opTypeStr = {};
+                return {SigDatabase::SigOpType::Lea};
+            }
+            if (opTypeStr.starts_with("mov")) {
+                opTypeStr = {};
+                return {SigDatabase::SigOpType::Mov};
+            }
+            if (opTypeStr.starts_with("deref32")) {
+                opTypeStr = {};
+                return {SigDatabase::SigOpType::Deref32};
+            }
+            if (opTypeStr.starts_with("deref")) {
+                opTypeStr = {};
+                return {SigDatabase::SigOpType::Deref};
+            }
             if (opTypeStr.starts_with("disp:")) {
                 opTypeStr = opTypeStr.substr(5).trim(' ');
                 ptrdiff_t disp;
                 if (opTypeStr.consumeInteger(0, disp))
-                    return {SigDatabase::SigOpType::_invalid};
+                    return {};
                 return {SigDatabase::SigOpType::Disp, disp};
             }
-            return {SigDatabase::SigOpType::_invalid};
+            if (opTypeStr.starts_with("rprl:")) {
+                opTypeStr = opTypeStr.substr(5).trim(' ');
+                uint32_t offset, insLen;
+                if (opTypeStr.consumeInteger(0, offset))
+                    return {};
+                if (opTypeStr.empty() || opTypeStr[0] != ',')
+                    return {};
+                opTypeStr = opTypeStr.substr(1).trim(' ');
+                if (opTypeStr.consumeInteger(0, insLen))
+                    return {};
+                return {SigDatabase::SigOpType::RipRel, offset, insLen};
+            }
+            return {};
         }
 
-        // "displ:6,call" -> {{displ, 6}, {call, X}}
+        // "disp:6,call" -> {{disp, 6}, {call, \}}
         static bool readSigOps(std::vector<SigDatabase::SigOp> &result, llvm::StringRef opsStr) {
-            llvm::SmallVector<llvm::StringRef> split;
-            opsStr.split(split, ',');
-            for (auto &&opStr : split) {
-                auto ver = readSigOp(opStr);
+            SigDatabase::SigOp op;
+            for (; !opsStr.empty();) {
+                auto ver = consumeSigOp(opsStr);
                 if (ver.opType == SigDatabase::SigOpType::_invalid)
                     return false;
                 result.emplace_back(ver);
+                opsStr = opsStr.trim(" ");
+                if (opsStr.starts_with(','))
+                    opsStr = opsStr.substr(1);
             }
-            return true;
+            return result.size();
         }
 
         bool VisitDataDecl(VarDecl *Val) {

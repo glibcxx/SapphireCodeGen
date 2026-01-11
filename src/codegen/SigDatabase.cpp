@@ -43,9 +43,14 @@ namespace sapphire::codegen {
             case SigDatabase::SigOpType::Call:
             case SigDatabase::SigOpType::Mov:
             case SigDatabase::SigOpType::Lea:
+            case SigDatabase::SigOpType::Deref32:
                 break;
             case SigDatabase::SigOpType::Disp:
-                result.data = fshelper::read<ptrdiff_t>(fs);
+                result.data.disp = fshelper::read<ptrdiff_t>(fs);
+                break;
+            case SigDatabase::SigOpType::RipRel:
+                result.data.ripRel.offset = fshelper::read<uint32_t>(fs);
+                result.data.ripRel.insLen = fshelper::read<uint32_t>(fs);
                 break;
             default:
                 throw std::runtime_error{"Invalid sig operation type"};
@@ -58,6 +63,11 @@ namespace sapphire::codegen {
             switch (s.opType) {
             case SigDatabase::SigOpType::Disp:
                 fs.write(reinterpret_cast<char *>(&s.data), sizeof(s.data));
+                break;
+            case SigDatabase::SigOpType::RipRel:
+                fs.write(reinterpret_cast<char *>(&s.data.ripRel.offset), sizeof(s.data.ripRel.offset));
+                fs.write(reinterpret_cast<char *>(&s.data.ripRel.insLen), sizeof(s.data.ripRel.insLen));
+                break;
             default:
                 break;
             }
@@ -158,7 +168,7 @@ namespace sapphire::codegen {
             std::cout << "  mSig=" << formatSig(it.mSig) << '\n';
             std::cout << "  mOperations=\n";
             for (auto &&op : it.mOperations) {
-                std::cout << "    opType=" << (int32_t)op.opType << ", data=" << op.data << '\n';
+                std::cout << "    opType=" << (int32_t)op.opType << ", data=" << op.data.disp << '\n';
             }
             std::cout << "---\n";
         }
