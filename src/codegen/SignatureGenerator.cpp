@@ -46,6 +46,11 @@ namespace sapphire::codegen {
         file << "EXPORTS\n";
         for (const auto &entry : entries) {
             file << "    " << entry.mSymbol << "\n";
+            if (entry.mType == SigDatabase::SigEntry::Type::CtorThunk
+                || entry.mType == SigDatabase::SigEntry::Type::DtorThunk) {
+                if (!entry.mExtraSymbol.empty())
+                    file << "    " << entry.mExtraSymbol << "\n";
+            }
         }
         llvm::outs() << llvm::formatv(
             "[Success] Generated DEF file: {0} ({1} exports)\n", outputPath, entries.size()

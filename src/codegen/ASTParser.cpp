@@ -229,78 +229,161 @@ namespace sapphire::codegen {
 
         bool VisitFunctionDecl(FunctionDecl *Func) {
             if (!Func->hasAttrs()) return true;
+            const clang::AnnotateAttr *bindApi = nullptr;
+            const clang::AnnotateAttr *aliasApi = nullptr;
             for (const auto *attr : Func->getAttrs()) {
                 const auto *ann = dyn_cast<AnnotateAttr>(attr);
                 if (!ann) continue;
                 llvm::StringRef annotation = ann->getAnnotation();
 
-                if (annotation != "sapphire::bind") continue;
-
-                std::set<uint64_t>    supportVersion;
-                SigDatabase::SigEntry sigEntry;
-                sigEntry.mType = SigDatabase::SigEntry::Type::Function;
-
-                auto argCount = ann->args_size();
-                if (argCount) {
-                    if (auto *versionListLiteral = getStringFromExpr(ann->args_begin()[0])) {
-                        auto versStr = versionListLiteral->getString();
-                        if (!util::parseMCVersions(supportVersion, versStr)) {
-                            llvm::errs() << llvm::formatv("[Warning] Invalid version string: \"{0}\"\n", versStr);
-                            continue;
+                if (annotation == "sapphire::bind") {
+                    std::set<uint64_t> supportVersion;
+                    if (ann->args_size()) {
+                        if (auto *versionListLiteral = getStringFromExpr(ann->args_begin()[0])) {
+                            auto versStr = versionListLiteral->getString();
+                            if (!util::parseMCVersions(supportVersion, versStr)) {
+                                llvm::errs() << llvm::formatv("[Warning] Invalid version string: \"{0}\"\n", versStr);
+                                continue;
+                            }
                         }
                     }
-                }
-                if (!supportVersion.count(mTargetMCVersion))
-                    continue;
-                if (argCount == 2) { // SPHR_DECL_API("Versions", "Sig")
-                    auto args = ann->args_begin();
-                    if (auto *SigLiteral = getStringFromExpr(args[1])) {
-                        sigEntry.mSig = SigLiteral->getString().str();
-                    }
-                } else if (argCount == 3) { // SPHR_DECL_API("Versions", "Ops", "Sig")
-                    auto args = ann->args_begin();
-                    if (auto *OpsLiteral = getStringFromExpr(args[1])) {
-                        readSigOps(sigEntry.mOperations, OpsLiteral->getString());
-                    }
-                    if (auto *SigLiteral = getStringFromExpr(args[2])) {
-                        sigEntry.mSig = SigLiteral->getString().str();
-                    }
-                } else {
-                    continue;
-                }
+                    if (!supportVersion.count(mTargetMCVersion))
+                        continue;
+                    bindApi = ann;
+                } else if (annotation == "sapphire::alias")
+                    aliasApi = ann;
+            }
+            if (!bindApi) return true;
 
-                if (sigEntry.mSig.empty()) {
-                    llvm::errs() << llvm::formatv(
-                        "[Warning] Empty signature detected for function: {0}\n",
-                        Func->getNameInfo().getName().getAsString()
-                    );
-                    continue;
-                }
+            std::set<uint64_t>    supportVersion;
+            SigDatabase::SigEntry sigEntry;
+            sigEntry.mType = SigDatabase::SigEntry::Type::Function;
 
-                llvm::raw_string_ostream Out(sigEntry.mSymbol);
-                if (mMangleCtx->shouldMangleDeclName(Func)) {
-                    const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(Func);
-                    if (MD && MD->isVirtual() && MD->isInstance()) {
-                        sigEntry.mType = SigDatabase::SigEntry::Type::VirtualThunk;
-                        llvm::raw_string_ostream OutEx(sigEntry.mExtraSymbol);
-                        mangleVirtualFunctionThunk(
-                            OutEx, *mMangleCtx, MD->getParent()->getMostRecentNonInjectedDecl(), MD
-                        );
+            auto argCount = bindApi->args_size();
+            if (argCount) {
+                if (auto *versionListLiteral = getStringFromExpr(bindApi->args_begin()[0])) {
+                    auto versStr = versionListLiteral->getString();
+                    if (!util::parseMCVersions(supportVersion, versStr)) {
+                        llvm::errs() << llvm::formatv("[Warning] Invalid version string: \"{0}\"\n", versStr);
+                        return true;
                     }
-                    mMangleCtx->mangleName(Func, Out);
-                } else {
-                    Out << Func->getNameInfo().getName().getAsString();
-                }
-
-                if (!sigEntry.mSymbol.empty()) {
-                    std::lock_guard<std::mutex> lk(gExportsMutex);
-                    auto                        found = gExports.find(mTargetMCVersion);
-                    if (found == gExports.end()) {
-                        found = gExports.try_emplace(mTargetMCVersion, mTargetMCVersion).first;
-                    }
-                    found->second.addSigEntry(std::move(sigEntry));
                 }
             }
+            if (!supportVersion.count(mTargetMCVersion))
+                return true;
+            if (argCount == 2) { // SPHR_DECL_API("Versions", "Sig")
+                auto args = bindApi->args_begin();
+                if (auto *SigLiteral = getStringFromExpr(args[1])) {
+                    sigEntry.mSig = SigLiteral->getString().str();
+                }
+            } else if (argCount == 3) { // SPHR_DECL_API("Versions", "Ops", "Sig")
+                auto args = bindApi->args_begin();
+                if (auto *OpsLiteral = getStringFromExpr(args[1])) {
+                    readSigOps(sigEntry.mOperations, OpsLiteral->getString());
+                }
+                if (auto *SigLiteral = getStringFromExpr(args[2])) {
+                    sigEntry.mSig = SigLiteral->getString().str();
+                }
+            } else {
+                llvm::errs() << llvm::formatv(
+                    "[Warning] Invalid sapphire::bind annotation args: {0}\n",
+                    Func->getNameInfo().getName().getAsString()
+                );
+                return true;
+            }
+
+            if (sigEntry.mSig.empty()) {
+                llvm::errs() << llvm::formatv(
+                    "[Warning] Empty signature detected for function: {0}\n",
+                    Func->getNameInfo().getName().getAsString()
+                );
+                return true;
+            }
+
+            llvm::raw_string_ostream Out(sigEntry.mSymbol);
+            if (mMangleCtx->shouldMangleDeclName(Func)) {
+                const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(Func);
+                if (MD && aliasApi) {
+                    if (aliasApi->args_size() != 1) {
+                        llvm::errs() << llvm::formatv(
+                            "[Warning] Invalid sapphire::alias annotation args size. {0}\n",
+                            Func->getNameInfo().getName().getAsString()
+                        );
+                        return true;
+                    }
+                    if (MD->isVirtual() && MD->isInstance()) {
+                        llvm::errs() << llvm::formatv(
+                            "[Warning] Api with sapphire::alias annotation cannot be virtual. {0}\n",
+                            Func->getNameInfo().getName().getAsString()
+                        );
+                        return true;
+                    }
+                    auto  args = aliasApi->args_begin();
+                    auto *aliasTypeExpr = getIntegerFromExpr(args[0]);
+                    if (!aliasTypeExpr) {
+                        llvm::errs() << llvm::formatv(
+                            "[Warning] sapphire::alias annotation args must be alias type id. {0}\n",
+                            Func->getNameInfo().getName().getAsString()
+                        );
+                        return true;
+                    }
+                    auto aliasTypeId = aliasTypeExpr->getValue();
+                    if (aliasTypeId == 0) {
+                        sigEntry.mType = SigDatabase::SigEntry::Type::CtorThunk;
+                        llvm::raw_string_ostream    OutEx(sigEntry.mExtraSymbol);
+                        const clang::CXXRecordDecl *clazz = MD->getParent();
+                        for (const auto *ctor : clazz->ctors()) {
+                            if (ctor->getNumParams() != MD->getNumParams()) continue;
+                            bool paramsMatch = true;
+                            for (unsigned i = 0; i < ctor->getNumParams(); ++i) {
+                                if (mContext.getCanonicalType(ctor->getParamDecl(i)->getType())
+                                    != mContext.getCanonicalType(MD->getParamDecl(i)->getType())) {
+                                    paramsMatch = false;
+                                    break;
+                                }
+                            }
+                            if (paramsMatch) {
+                                mMangleCtx->mangleName(ctor, OutEx);
+                                break;
+                            }
+                        }
+                    } else if (aliasTypeId == 1) {
+                        sigEntry.mType = SigDatabase::SigEntry::Type::DtorThunk;
+                        llvm::raw_string_ostream    OutEx(sigEntry.mExtraSymbol);
+                        const clang::CXXRecordDecl *clazz = MD->getParent();
+                        if (const CXXDestructorDecl *dtor = clazz->getDestructor()) {
+                            mMangleCtx->mangleName(GlobalDecl(dtor, CXXDtorType::Dtor_Base), OutEx);
+                        }
+                    } else {
+                        llvm::errs() << llvm::formatv(
+                            "[Warning] Unknown sapphire::alias annotation alias type Id: '{0}'. {1}\n",
+                            aliasTypeId,
+                            Func->getNameInfo().getName().getAsString()
+                        );
+                        return true;
+                    }
+
+                } else if (MD && MD->isVirtual() && MD->isInstance()) {
+                    sigEntry.mType = SigDatabase::SigEntry::Type::VirtualThunk;
+                    llvm::raw_string_ostream OutEx(sigEntry.mExtraSymbol);
+                    mangleVirtualFunctionThunk(
+                        OutEx, *mMangleCtx, MD->getParent()->getMostRecentNonInjectedDecl(), MD
+                    );
+                }
+                mMangleCtx->mangleName(Func, Out);
+            } else {
+                Out << Func->getNameInfo().getName().getAsString();
+            }
+
+            if (!sigEntry.mSymbol.empty()) {
+                std::lock_guard<std::mutex> lk(gExportsMutex);
+                auto                        found = gExports.find(mTargetMCVersion);
+                if (found == gExports.end()) {
+                    found = gExports.try_emplace(mTargetMCVersion, mTargetMCVersion).first;
+                }
+                found->second.addSigEntry(std::move(sigEntry));
+            }
+
             return true;
         }
 
@@ -308,6 +391,12 @@ namespace sapphire::codegen {
             if (!E) return nullptr;
             const Expr *Unwrapped = E->IgnoreParenImpCasts();
             return dyn_cast<clang::StringLiteral>(Unwrapped);
+        }
+
+        static const clang::IntegerLiteral *getIntegerFromExpr(const Expr *E) {
+            if (!E) return nullptr;
+            const Expr *Unwrapped = E->IgnoreParenImpCasts();
+            return dyn_cast<clang::IntegerLiteral>(Unwrapped);
         }
 
     private:
