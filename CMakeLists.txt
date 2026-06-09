@@ -13,7 +13,8 @@ include(AddLLVM)
 
 find_package(mimalloc REQUIRED CONFIG)
 
-add_definitions(${LLVM_DEFINITIONS})
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+add_definitions(${LLVM_DEFINITIONS_LIST})
 include_directories(${LLVM_INCLUDE_DIRS})
 link_directories(${LLVM_LIBRARY_DIRS})
 
@@ -40,16 +41,6 @@ llvm_map_components_to_libnames(llvm_libs
 target_link_libraries(SapphireCodeGen PRIVATE
     clangTooling
     clangFrontend
-    clangSerialization
-    clangDriver
-    clangParse
-    clangSema
-    clangAnalysis
-    clangAST
-    clangASTMatchers
-    clangLex
-    clangBasic
-    clangEdit
     ${llvm_libs}
     $<IF:$<TARGET_EXISTS:mimalloc-static>,mimalloc-static,mimalloc>
 )

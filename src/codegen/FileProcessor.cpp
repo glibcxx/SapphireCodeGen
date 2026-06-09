@@ -1,5 +1,6 @@
 #include "FileProcessor.h"
 
+#include <filesystem>
 #include <fstream>
 #include <llvm/Support/ThreadPool.h>
 

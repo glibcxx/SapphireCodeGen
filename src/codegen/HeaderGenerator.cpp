@@ -1,7 +1,6 @@
 #include "HeaderGenerator.h"
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <llvm/ADT/StringRef.h>
 
 namespace fs = std::filesystem;

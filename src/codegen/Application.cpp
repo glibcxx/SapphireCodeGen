@@ -7,6 +7,7 @@
 #include "HeaderGenerator.h"
 #include "../util/StringUtil.h"
 
+#include <filesystem>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/FormatVariadic.h>
 

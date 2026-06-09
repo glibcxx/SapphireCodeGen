@@ -367,7 +367,7 @@ namespace sapphire::codegen {
                     sigEntry.mType = SigDatabase::SigEntry::Type::VirtualThunk;
                     llvm::raw_string_ostream OutEx(sigEntry.mExtraSymbol);
                     mangleVirtualFunctionThunk(
-                        OutEx, *mMangleCtx, MD->getParent()->getMostRecentNonInjectedDecl(), MD
+                        OutEx, *mMangleCtx, MD->getParent()->getMostRecentDecl(), MD
                     );
                 }
                 mMangleCtx->mangleName(Func, Out);
@@ -547,8 +547,8 @@ namespace sapphire::codegen {
                 std::string              diagOutput;
                 llvm::raw_string_ostream diagStream(diagOutput);
 
-                llvm::IntrusiveRefCntPtr diagOpts = llvm::makeIntrusiveRefCnt<DiagnosticOptions>();
-                TextDiagnosticPrinter    diagnosticPrinter(diagStream, diagOpts.get());
+                DiagnosticOptions     diagOpts{};
+                TextDiagnosticPrinter diagnosticPrinter(diagStream, diagOpts);
 
                 tool.setDiagnosticConsumer(&diagnosticPrinter);
 
