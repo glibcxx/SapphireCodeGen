@@ -81,7 +81,8 @@ namespace sapphire::codegen {
                     StringRef arg = baseArgs[i];
                     if (arg.starts_with("/Yu") || arg.starts_with("/Yc") || arg.starts_with("/Fp") || arg.starts_with("/FI")
                         || arg.starts_with("/Fo") || arg.starts_with("/Fa") || arg.starts_with("/Fe")
-                        || arg.starts_with("-DMC_VERSION=") || arg.starts_with("/DMC_VERSION=") || arg == sourceFilename) {
+                        || arg.starts_with("-DMC_VERSION=") || arg.starts_with("/DMC_VERSION=") || arg.ends_with(".cpp")
+                        || arg.ends_with(".cxx") || arg.ends_with(".c") || arg.ends_with(".cc")) {
                         continue;
                     }
                     newArgs.push_back(std::string(arg));
